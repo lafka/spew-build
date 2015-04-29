@@ -1,0 +1,150 @@
+#!/bin/bash
+
+GREP_OPTIONS=
+
+set -e
+
+self=$(dirname $(readlink -f $0))
+
+targetdirs=${SPEW_TARGETS:-$self/targets /home/$USER/.spew/targets ./targets}
+builddir=${BUILDDIR:-~/.spew/builds}
+targets=
+
+for targetdir in $targetdirs; do
+	targetdir=$(readlink -f "$targetdir" || echo "$targetdir" )
+
+	[ ! -e "$targetdir" ] && continue
+
+	for target in $(find -L "$targetdir" -name build.sh); do
+		name=$(basename $(dirname $(dirname "$target")))
+		buf="$name#$(dirname $(dirname $target))"
+		echo $targets | grep -q $buf || targets="$buf $targets"
+	done
+done
+
+targets=$(echo $targets | sort -u)
+
+cmd="$1"
+shift
+case "$cmd" in
+	"list-targets")
+		for target in $targets; do
+			name=$(echo $target | awk -F'#' '{print $1}')
+			path=$(echo $target | awk -F'#' '{print $2}')
+			vsns=$(echo $(ls "$path") | sed 's/ /, /g')
+			printf "%-20s %-50s (%s)\r\n" "$name" $(echo $path | head -c 50) "$vsns"
+		done
+		;;
+
+	"list-builds")
+		for build in $(find $builddir/$1 -maxdepth 3 -type d 2> /dev/null); do
+			name=$(echo $build | sed -E "s#$builddir/?##")
+			echo $name | grep -q / || continue
+			if echo $name | grep -qP '[^/]*/[^/]*/.*'; then
+				echo -e "\t$(echo $name | sed 's#.*/.*/##') -> $(echo $(ls $build) | sed 's# #, #')"
+			else
+				echo -e "\n$name"
+			fi
+		done
+		;;
+
+	"build")
+		name=$(echo $1 | awk -F'/' '{print $1}')
+		vsn=$(echo $1 | awk -F'/' '{print $2}')
+
+		if [ -z "$name" ] || [ -z "$vsn" ]; then
+			echo "usage: $0 build <target>/<vsn>" >&2
+			exit 2
+		fi
+
+
+		path=$(echo $targets | grep -o "${name}#[^ ]*" | awk -F'#' '{print $2}')
+
+		srcdir="$path/$vsn"
+
+		buildscript="$srcdir/build.sh"
+		if [ ! -e "$buildscript" ]; then
+			echo "error: build.sh in $path/$vsn was not found or is not executable" >&2
+			exit 2
+		fi
+
+		buildid=$(shasum $(find $srcdir -type f -or -type l) | shasum | awk '{print $1}' | head -c 6)
+		distdir=$builddir/$name/$vsn/$buildid
+
+		if [ -d "$distdir" ] && [ "-f" != "$2" ]; then
+			echo "ERROR: build exists $name/$vsn#$buildid... use -f to overwrite" >&2
+			exit 2
+		fi
+
+		buildtarget=$(mktemp -d)
+
+		env="SRCDIR=$srcdir \
+			http_proxy=$http_proxy \
+			BUILDDIR=$buildtarget \
+			PATH=/bin:/sbin/:/usr/bin:/usr/sbin:/usr/bin/core_perl/shasum"
+
+		echo "=> Running $buildscript"
+		env -i $env "$buildscript"
+
+		if [ 0 = $? ]; then
+			buildref=$(cd $buildtarget; find -type f -exec shasum '{}' ';' | shasum | awk '{print $1}' | head -c 6)
+			echo "=> Build $name/$vsn:$buildref in $buildtarget"
+			if [ -d "$distdir/$buildref" ]; then
+				echo "info: build $name/$vsn#$buildid/$buildref exists, delete it first to rebuild" >&2
+				exit
+			else
+				echo "=> Copying $buildtarget -> $distdir/$buildref"
+				mkdir -p $distdir/$buildref
+				rsync -avh $buildtarget/ $distdir/$buildref/ > /dev/null
+				echo "=> Build was successfull"
+				exit
+			fi
+		else
+			echo "=> Build failed..."
+		fi
+		rm -rf "$buildtarget"
+		;;
+
+	"delete-build")
+		for build in $@; do
+			echo "=> Deleting build"
+			rm -rf $builddir/$build
+		done
+		;;
+
+	"run")
+		name=$1
+		target=$2
+		shift 2
+		opts="$@"
+
+		[ -z "$name" ] || [ -z "$target" ] && { echo "usage: $0 run <name> <target>/<vsn>" >&2; exit 2; }
+
+		if [ ! -e "$builddir/$target/buildt" ]; then
+			echo "error: $builddir/$target was not buildt successfully" >&2
+			exit 1
+		fi
+		if [ ! -x "$builddir/$target/run.sh" ]; then
+			echo "warning: $target/run.sh does not exist or not executable" >&2
+			systemd-nspawn \
+					-M "$name" \
+					-D "$builddir/$target" \
+					--link-journal=try-guest \
+					--network-bridge br0 \
+					--network-veth \
+					${opts:---boot }
+		else
+			systemd-nspawn \
+					-M "$name" \
+					-D "$builddir/$target" \
+					--link-journal=try-guest \
+					--network-bridge br0 \
+					--network-veth \
+					$opts /run.sh
+		fi
+		;;
+
+	*)
+		echo "usage: $0 list-targets|list-builds|build|delete-build [args]" >&2;
+		exit 1
+esac

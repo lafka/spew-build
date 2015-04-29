@@ -1,0 +1,20 @@
+# Spew Build
+
+Spew build is some shell utilities to help build _semi-reproducable_
+appliances and run them with `systemd-nspawn`
+
+
+## Examples
+
+```
+$ spew-build riak/2.1.0
+...
+=> Running /data/src/lafka/spew-targets/dummy/0.0.2/build.sh
+=> Build dummy/0.0.2:480530 in /tmp/tmp.QtSrjvU23J
+=> Copying /tmp/tmp.QtSrjvU23J -> /home/user/.spew/builds/dummy/0.0.2/02cc83/480530
+=> Build was successfull
+$ spew-build run riak-local riak/2.1.0
+```
+
+
+See `bin/spew-build` for more info
