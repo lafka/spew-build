@@ -87,6 +87,10 @@ case "$cmd" in
 		env -i $env "$buildscript"
 
 		if [ 0 = $? ]; then
+			if [ -f "$srcdir/files" ]; then
+				rsync -avh $srcdir/files/ $buildtarget/
+			fi
+
 			buildref=$(cd $buildtarget; find -type f -exec shasum '{}' ';' | shasum | awk '{print $1}' | head -c 6)
 			echo "=> Build $name/$vsn:$buildref in $buildtarget"
 			if [ -d "$distdir/$buildref" ]; then
