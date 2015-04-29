@@ -7,7 +7,7 @@ set -e
 self=$(dirname $(readlink -f $0))
 
 targetdirs=${SPEW_TARGETS:-$self/targets /home/$USER/.spew/targets ./targets}
-builddir=${BUILDDIR:-~/.spew/builds}
+builddir=$(realpath ${BUILDDIR:-~/.spew/builds})
 targets=
 
 for targetdir in $targetdirs; do
@@ -41,7 +41,7 @@ case "$cmd" in
 			name=$(echo $build | sed -E "s#$builddir/?##")
 			echo $name | grep -q / || continue
 			if echo $name | grep -qP '[^/]*/[^/]*/.*'; then
-				echo -e "\t$(echo $name | sed 's#.*/.*/##') -> $(echo $(ls $build) | sed 's# #, #')"
+				echo -e "\t$(echo $name | sed 's#.*/.*/##') -> $(echo $(ls $build) | sed 's/.tar.gz//g;s# #, #')"
 			else
 				echo -e "\n$name"
 			fi
@@ -51,6 +51,8 @@ case "$cmd" in
 	"build")
 		name=$(echo $1 | awk -F'/' '{print $1}')
 		vsn=$(echo $1 | awk -F'/' '{print $2}')
+
+		shift 2 || true
 
 		if [ -z "$name" ] || [ -z "$vsn" ]; then
 			echo "usage: $0 build <target>/<vsn>" >&2
@@ -84,22 +86,28 @@ case "$cmd" in
 			PATH=/bin:/sbin/:/usr/bin:/usr/sbin:/usr/bin/core_perl/shasum"
 
 		echo "=> Running $buildscript"
-		env -i $env "$buildscript"
+		env -i $env "$buildscript" $@
 
 		if [ 0 = $? ]; then
-			if [ -f "$srcdir/files" ]; then
-				rsync -avh $srcdir/files/ $buildtarget/
+			if [ -d "$srcdir/files" ]; then
+				sudo rsync -avh $srcdir/files/ $buildtarget/
 			fi
 
-			buildref=$(cd $buildtarget; find -type f -exec shasum '{}' ';' | shasum | awk '{print $1}' | head -c 6)
+			archive=$(mktemp -u)
+			cd $buildtarget
+			sudo tar -cf $archive .
+
+			buildref=$name_$vsn_$(shasum $archive | awk '{print $1}' | head -c 6).tar.gz
 			echo "=> Build $name/$vsn:$buildref in $buildtarget"
 			if [ -d "$distdir/$buildref" ]; then
 				echo "info: build $name/$vsn#$buildid/$buildref exists, delete it first to rebuild" >&2
+				sudo rm $archive
 				exit
 			else
 				echo "=> Copying $buildtarget -> $distdir/$buildref"
-				mkdir -p $distdir/$buildref
-				rsync -avh $buildtarget/ $distdir/$buildref/ > /dev/null
+				mkdir -p $distdir
+				cp $archive $distdir/$buildref
+				sudo rm $archive
 				echo "=> Build was successfull"
 				exit
 			fi
@@ -124,15 +132,31 @@ case "$cmd" in
 
 		[ -z "$name" ] || [ -z "$target" ] && { echo "usage: $0 run <name> <target>/<vsn>" >&2; exit 2; }
 
-		if [ ! -e "$builddir/$target/buildt" ]; then
-			echo "error: $builddir/$target was not buildt successfully" >&2
-			exit 1
+		path="$builddir/$target"
+		if [ ! -d "$path" ]; then
+			echo "error: no builds found for $target ($path)" >&2
+			exit 3
 		fi
-		if [ ! -x "$builddir/$target/run.sh" ]; then
+
+		if [ $(find $path -type f | wc -l) -gt 1 ]; then
+			echo "error: multiple builds found... be specific..." >&2
+			echo "builds: $(echo $(ls $path))" >&2
+
+			exit 3
+		fi
+
+		archive=$(find $path -type f)
+		rundir=/tmp/spew-app-$(basename -s .tar.gz $archive)
+
+		echo "=> Extracting $archive to $rundir"
+		mkdir -p $rundir
+		sudo tar -xf $archive -C $rundir
+
+		if [ ! -x "$rundir/run.sh" ] && [ -z "$opts" ] ; then
 			echo "warning: $target/run.sh does not exist or not executable" >&2
 			systemd-nspawn \
 					-M "$name" \
-					-D "$builddir/$target" \
+					-D "$rundir" \
 					--link-journal=try-guest \
 					--network-bridge br0 \
 					--network-veth \
@@ -140,11 +164,11 @@ case "$cmd" in
 		else
 			systemd-nspawn \
 					-M "$name" \
-					-D "$builddir/$target" \
+					-D "$rundir" \
 					--link-journal=try-guest \
 					--network-bridge br0 \
 					--network-veth \
-					$opts /run.sh
+					$opts
 		fi
 		;;
 
