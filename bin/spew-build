@@ -160,11 +160,11 @@ case "$cmd" in
 			archive=$(mktemp -u)
 			cd $buildtarget
 			cat > SPEWMETA <<EOF
-TARGET="$target"
-VSN="$vsn"
-SRCREF="$buildid"
-BUILDDATE="$(date -u --rfc-3339 seconds | sed 's/ /T/')"
-BUILDUNAME="$(uname -a)"
+TARGET=$target
+VSN=$vsn
+SRCREF=$buildid
+BUILDDATE=$(date -u --rfc-3339 seconds | sed 's/ /T/')
+BUILDUNAME=$(uname -a)
 EOF
 			sudo tar -cf "$archive" .
 
@@ -198,6 +198,64 @@ EOF
 			echo "=> Build failed..."
 		fi
 		rm -rf "$buildtarget"
+		;;
+
+	"import-build")
+		archive="$1"
+		signature="$2"
+		force=no
+
+		if [ '-f' == "$signature" ]; then
+			signature=
+			force=yes
+		elif [ '-f' == "$3" ]; then
+			force=yes
+		fi
+
+		[ -z "$archive" ]  && { echo "usage: $0 import-build <archive> <signature>" >&2; exit 2; }
+		[ -z "$signature" ] && signature="$archive.asc"
+
+		[ ! -r "$archive" ] && { echo "error: archive not found or not readable" >&2; exit 2; }
+		[ ! -r "$signature" ] && { echo "error: the archive signature not found or not readable" >&2; exit 2; }
+
+
+		matchsum=$(shasum "$archive" | awk '{print $1}')
+
+		if [ "$matchsum.tar.gz" != "$(basename "$archive")" ]; then
+			echo "ERROR: Checksum mismatch" >&2
+			exit 3
+		fi
+
+		if gpg -q --verify "$archive.asc" "$archive" > /dev/null 2>&1; then
+			echo "=> GPG Signature verified"
+		else
+			echo "ERROR: Failed to verify GPG signature" >&2
+			exit 3
+		fi
+
+		eval export $(tar xvf "$archive" -O ./SPEWMETA 2> /dev/null | sed "s/.*/'&'/")
+		[ -z "$TARGET" ] && { echo "error: no target info in build (SPEWMETA)"; exit 3; }
+		[ -z "$VSN" ] && { echo "error: no version info in build (SPEWMETA)"; exit 3; }
+		[ -z "$SRCREF" ] && { echo "error: no source ref info in build (SPEWMETA)"; exit 3; }
+
+		if [ -e "$builddir/$TARGET/$VSN/$SRCREF/$(basename "$archive")" ] && [ 'yes' != "$force" ]; then
+			echo "error: build already exists, use -f to override" >&2
+			exit 3
+		fi
+
+		echo "=> Importing $(basename "$archive") to $TARGET/$VSN/$SRCREF"
+		mkdir -p "$builddir/$TARGET/$VSN/$SRCREF"
+		cp "$archive" "$builddir/$TARGET/$VSN/$SRCREF/"
+		cp "$signature" "$builddir/$TARGET/$VSN/$SRCREF/$(basename "$archive.asc")"
+
+		;;
+
+	"sync-build")
+		build="$1"
+		shift
+		remotes="$*"
+
+		( [ -z "$build" ] || [ -z "$remotes" ] ) && { echo "usage: $0 sync-build <build> <remote-1, .., remote-n>>" >&2; exit 2; }
 		;;
 
 	"delete-build")
@@ -323,6 +381,6 @@ EOF
 		;;
 
 	*)
-		echo "usage: $0 list-targets|list-builds|build|delete-build|build-info [args]" >&2;
+		echo "usage: $0 list-targets|list-builds|build|delete-build|build-info|sync-build [args]" >&2;
 		exit 1
 esac
