@@ -138,12 +138,14 @@ case "$cmd" in
 			exit 2
 		fi
 
-		buildid=$(shasum $(find $srcdir -type f -or -type l) | shasum | awk '{print $1}' | head -c 6)
+		buildid=$(shasum $(find $srcdir -type f -or -type l) | shasum | awk '{print $1}')
 		distdir=$builddir/$name/$vsn/$buildid
 
-		if [ -d "$distdir" ] && [ "-f" != "$2" ]; then
+		if [ -d "$distdir" ] && [ "-f" != "$1" ]; then
 			echo "ERROR: build exists $name/$vsn#$buildid... use -f to overwrite" >&2
 			exit 2
+		elif [ "-f" == "$1" ]; then
+			shift
 		fi
 
 		buildtarget=$(mktemp -d)
@@ -165,17 +167,19 @@ case "$cmd" in
 			cd $buildtarget
 			sudo tar -cf $archive .
 
-			buildref=$name_$vsn_$(shasum $archive | awk '{print $1}' | head -c 6).tar.gz
+			buildhash=$(shasum $archive | awk '{print $1}')
+			buildref=$buildhash.tar.gz
 			echo "=> Build $name/$vsn:$buildref in $buildtarget"
 			if [ -d "$distdir/$buildref" ]; then
 				echo "info: build $name/$vsn#$buildid/$buildref exists, delete it first to rebuild" >&2
-				sudo rm $archive
+				sudo rm "$archive"
 				exit
 			else
 				echo "=> Copying $buildtarget -> $distdir/$buildref"
-				mkdir -p $distdir
-				cp $archive $distdir/$buildref
-				sudo rm $archive
+				mkdir -p "$distdir"
+
+				cp "$archive" "$distdir/$buildref"
+				sudo rm "$archive"
 				echo "=> Build was successfull"
 				exit
 			fi
@@ -186,34 +190,62 @@ case "$cmd" in
 		;;
 
 	"delete-build")
-		for build in $@; do
-			echo "=> Deleting build"
-			rm -rf $builddir/$build
+		for build in "$@"; do
+			echo "=> Deleting build: $build"
+			rm -rf "${builddir:?}/$build"
 		done
 		;;
 
 	"run")
 		name=$1
-		target=$2
-		shift 2
+		arg=$2
 		opts="$@"
+		shift 2 || true
 
-		[ -z "$name" ] || [ -z "$target" ] && { echo "usage: $0 run <name> <target>/<vsn>" >&2; exit 2; }
+		[ -z "$name" ] && { echo "usage: $0 run <name> <target>[/vsn[/ref[/build]]]" >&2; exit 2; }
 
-		path="$builddir/$target"
-		if [ ! -d "$path" ]; then
+		set +e
+		target=$(echo "$arg" | awk -F/ '{print $1}')
+		vsn=$(echo "$arg" | awk -F/ '{print $2}')
+		ref=$(echo "$arg" | awk -F/ '{print $3}')
+		build=$(echo "$arg" | awk -F/ '{print $4}')
+
+		path=$(expand_target "$arg")
+		res=$?
+		set -e
+
+		if [ 1 -eq $res ]; then
+			echo "error: no such target: $target" >&2
+		elif [ 2 -eq $res ]; then
+			echo "error: no such version for $target" >&2
+			echo "=> Available versions:"
+			ls "$builddir/$target"
+		elif [ 3 -eq $res ]; then
+			echo "error: no such cfgref $ref for $path" >&2
+		elif [ 4 -eq $res ]; then
+			echo "error: no such build for $target/$vsn/$ref" >&2
+		fi
+
+		[ 0 -eq $res ] || exit $res
+
+		if [ -e "$path.tar.gz" ]; then
+			path=$path.tar.gz
+		elif [ ! -d "$path" ]; then
 			echo "error: no builds found for $target ($path)" >&2
 			exit 3
 		fi
 
-		if [ $(find $path -type f | wc -l) -gt 1 ]; then
+		if [ $(find $path -type f -name '*.tar.gz' | wc -l) -gt 1 ]; then
 			echo "error: multiple builds found... be specific..." >&2
-			echo "builds: $(echo $(ls $path))" >&2
+			echo "=> Builds: " >&2
+			for f in $(find $path -name '*.tar.gz'); do
+				echo -e "\t $(basename $(dirname $f)| head -c 6)/$(basename -s .tar.gz $f)"
+			done
 
 			exit 3
 		fi
 
-		archive=$(find $path -type f)
+		archive=$(find $path -type f -name '*.tar.gz')
 		rundir=/tmp/spew-app-$(basename -s .tar.gz $archive)
 
 		echo "=> Extracting $archive to $rundir"
