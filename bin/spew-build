@@ -24,6 +24,28 @@ done
 
 targets=$(echo $targets | sort -u)
 
+
+expand_target() {
+	echo lol: $1
+	local target=$(echo $1 | awk -F/ '{print $1}')
+	local vsn=$(echo $1 | awk -F/ '{print $2}')
+	local ref=$(echo $1 | awk -F/ '{print $3}')
+	local build=$(echo $1 | awk -F/ '{print $4}')
+
+		echo "target: $target" >&2
+		echo "vsn: $vsn" >&2
+		echo "ref: $ref" >&2
+		echo "build: $build" >&2
+
+	[ ! -d "$builddir/$target" ] && return 1
+	( [ -z "$vsn" ] || [ ! -d "$builddir/$target/$vsn" ] ) && return 2
+	path=$(realpath "$builddir/$target/$vsn/$ref"*/)
+	[ ! -d "$path" ] && return 3
+	subpath=$(realpath "$path/$build"*.tar.gz)
+	[ ! -e "$subpath" ] && { echo "$subpath"; return 4; }
+	echo "$path/$(basename -s .tar.gz "$subpath")"
+}
+
 cmd="$1"
 shift
 case "$cmd" in
@@ -37,22 +59,68 @@ case "$cmd" in
 		;;
 
 	"list-builds")
-		for build in $(find $builddir/$1 -maxdepth 3 -type d 2> /dev/null); do
-			name=$(echo $build | sed -E "s#$builddir/?##")
-			echo $name | grep -q / || continue
-			if echo $name | grep -qP '[^/]*/[^/]*/.*'; then
-				echo -e "\t$(echo $name | sed 's#.*/.*/##') -> $(echo $(ls $build) | sed 's/.tar.gz//g;s# #, #')"
-			else
-				echo -e "\n$name"
-			fi
-		done
+		# May god have mercy on your soul for reading this as you must
+		# really hate the guy who wrote me
+		target=$(echo $1 | awk -F/ '{print $1}')
+		vsn=$(echo $1 | awk -F/ '{print $2}')
+		ref=$(echo $1 | awk -F/ '{print $3}')
+
+		[ ! -z "$name" ] && [ ! -d "$builddir/$target" ] && { echo "error: no such target: $target" >&2; exit 1; }
+		[ ! -z "$vsn" ] && [ ! -d "$builddir/$target/$vsn" ] && { echo "error: no such vsn '$vsn' for $target" >&2; exit 1; }
+
+		if [ ! -z "$ref" ]; then
+			ref=$(basename $builddir/$target/$vsn/$ref*)
+		fi
+
+		if [ -z "$name" ]; then
+			echo    "All Builds:"
+			echo -e "-----------\n"
+			for target in $(ls "$builddir"); do
+				echo "$target"
+				for vsn in $(ls -r "$builddir/$target"); do
+					for ref in $(ls "$builddir/$target/$vsn"); do
+						builds=
+						for build in $(cd $builddir/$target/$vsn/$ref; find -name '*.tar.gz'); do
+							builds="$(echo $build | sed 's#./##;s#\.tar\.gz##' | head -c 6) $builds"
+						done
+						echo -e "\t$vsn/$(echo $ref | head -c 6) -> $builds"
+					done
+				done
+				echo
+			done
+		elif [ -z "$vsn" ]; then
+			# specific target
+			echo "Builds for $1"
+			for vsn in $(ls -r "$builddir/$target"); do
+				for ref in $(ls "$builddir/$target/$vsn"); do
+					echo -e "\t$vsn/$(echo $ref | head -c 6)"
+				done
+			done
+		elif [ -z "$ref" ]; then
+			# specific vsn
+			echo "Builds for $name/$vsn"
+			for ref in $(ls "$builddir/$target/$vsn"); do
+				builds=
+				for build in $(cd $builddir/$target/$vsn/$ref; find -name '*.tar.gz'); do
+					builds="$(echo $build | sed 's#./##;s#\.tar\.gz##' | head -c 6) $builds"
+				done
+				echo -e "\t$vsn/$(echo $ref | head -c 6) -> $builds"
+			done
+		else
+			# specific cfg ref
+			echo "Builds for $target/$vsn/$ref"
+			for f in $builddir/$target/$vsn/$ref/*; do
+				echo $f | grep -Pq '.tar.gz$' || continue
+				echo -e "\t$(basename -s .tar.gz "$f" | head -c 6)"
+			done
+		fi
 		;;
 
 	"build")
 		name=$(echo $1 | awk -F'/' '{print $1}')
 		vsn=$(echo $1 | awk -F'/' '{print $2}')
 
-		shift 2 || true
+		shift || true
 
 		if [ -z "$name" ] || [ -z "$vsn" ]; then
 			echo "usage: $0 build <target>/<vsn>" >&2
