@@ -178,6 +178,14 @@ case "$cmd" in
 				echo "=> Copying $buildtarget -> $distdir/$buildref"
 				mkdir -p "$distdir"
 
+				if echo "$buildhash" | gpg --sign --armor > "$distdir/$buildref.gpg"; then
+					echo "=> Build signed"
+				else
+					echo "ERROR: Failed to sign build" >&2
+					sudo rm "$archive"
+					exit 3
+				fi
+
 				cp "$archive" "$distdir/$buildref"
 				sudo rm "$archive"
 				echo "=> Build was successfull"
@@ -247,6 +255,20 @@ case "$cmd" in
 
 		archive=$(find $path -type f -name '*.tar.gz')
 		rundir=/tmp/spew-app-$(basename -s .tar.gz $archive)
+
+		matchsum=$(shasum $archive | awk '{print $1}')
+
+		if [ "$matchsum.tar.gz" != $(basename "$archive") ]; then
+			echo "ERROR: Checksum mismatch" >&2
+			exit 3
+		fi
+
+		if gpg -q --verify "$archive.gpg" > /dev/null 2>&1; then
+			echo "=> GPG Signature verified"
+		else
+			echo "ERROR: Failed to verify GPG signature" >&2
+			exit 3
+		fi
 
 		echo "=> Extracting $archive to $rundir"
 		mkdir -p $rundir
