@@ -178,7 +178,7 @@ case "$cmd" in
 				echo "=> Copying $buildtarget -> $distdir/$buildref"
 				mkdir -p "$distdir"
 
-				if echo "$buildhash" | gpg --sign --armor > "$distdir/$buildref.gpg"; then
+				if gpg --armor --detach-sign "$archive"; then
 					echo "=> Build signed"
 				else
 					echo "ERROR: Failed to sign build" >&2
@@ -187,7 +187,9 @@ case "$cmd" in
 				fi
 
 				cp "$archive" "$distdir/$buildref"
+				cp "$archive.asc" "$distdir/$buildref.asc"
 				sudo rm "$archive"
+				sudo rm "$archive.asc"
 				echo "=> Build was successfull"
 				exit
 			fi
@@ -263,7 +265,7 @@ case "$cmd" in
 			exit 3
 		fi
 
-		if gpg -q --verify "$archive.gpg" > /dev/null 2>&1; then
+		if gpg -q --verify "$archive.asc" "$archive" > /dev/null 2>&1; then
 			echo "=> GPG Signature verified"
 		else
 			echo "ERROR: Failed to verify GPG signature" >&2
