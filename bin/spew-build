@@ -159,6 +159,13 @@ case "$cmd" in
 
 			archive=$(mktemp -u)
 			cd $buildtarget
+			cat > SPEWMETA <<EOF
+TARGET="$target"
+VSN="$vsn"
+SRCREF="$buildid"
+BUILDDATE="$(date -u --rfc-3339 seconds | sed 's/ /T/')"
+BUILDUNAME="$(uname -a)"
+EOF
 			sudo tar -cf "$archive" .
 
 			buildhash=$(shasum "$archive" | awk '{print $1}')
@@ -198,6 +205,36 @@ case "$cmd" in
 			echo "=> Deleting build: $build"
 			rm -rf "${builddir:?}/$build"
 		done
+		;;
+
+	"build-info")
+		arg="$1"
+		set +e
+		path=$(expand_target "$arg")
+		res=$?
+
+		target=$(echo "$arg" | awk -F/ '{print $1}')
+		vsn=$(echo "$arg" | awk -F/ '{print $2}')
+		ref=$(echo "$arg" | awk -F/ '{print $3}')
+		build=$(echo "$arg" | awk -F/ '{print $4}')
+		set -e
+
+		if [ 1 -eq $res ]; then
+			echo "error: no such target: $target" >&2
+		elif [ 2 -eq $res ]; then
+			echo "error: no such version for $target" >&2
+			echo "=> Available versions:"
+			ls "$builddir/$target"
+		elif [ 3 -eq $res ]; then
+			echo "error: no such cfgref $ref for $path" >&2
+		elif [ 4 -eq $res ]; then
+			echo "error: no such build for $target/$vsn/$ref" >&2
+		fi
+
+		[ 0 -eq "$res" ] || exit $res
+
+		tar xvf "$path.tar.gz" -O ./SPEWMETA
+
 		;;
 
 	"run")
@@ -286,6 +323,6 @@ case "$cmd" in
 		;;
 
 	*)
-		echo "usage: $0 list-targets|list-builds|build|delete-build [args]" >&2;
+		echo "usage: $0 list-targets|list-builds|build|delete-build|build-info [args]" >&2;
 		exit 1
 esac
