@@ -26,16 +26,10 @@ targets=$(echo $targets | sort -u)
 
 
 expand_target() {
-	echo lol: $1
 	local target=$(echo $1 | awk -F/ '{print $1}')
 	local vsn=$(echo $1 | awk -F/ '{print $2}')
 	local ref=$(echo $1 | awk -F/ '{print $3}')
 	local build=$(echo $1 | awk -F/ '{print $4}')
-
-		echo "target: $target" >&2
-		echo "vsn: $vsn" >&2
-		echo "ref: $ref" >&2
-		echo "build: $build" >&2
 
 	[ ! -d "$builddir/$target" ] && return 1
 	( [ -z "$vsn" ] || [ ! -d "$builddir/$target/$vsn" ] ) && return 2
@@ -117,18 +111,18 @@ case "$cmd" in
 		;;
 
 	"build")
-		name=$(echo $1 | awk -F'/' '{print $1}')
+		target=$(echo $1 | awk -F'/' '{print $1}')
 		vsn=$(echo $1 | awk -F'/' '{print $2}')
 
 		shift || true
 
-		if [ -z "$name" ] || [ -z "$vsn" ]; then
+		if [ -z "$target" ] || [ -z "$vsn" ]; then
 			echo "usage: $0 build <target>/<vsn>" >&2
 			exit 2
 		fi
 
 
-		path=$(echo $targets | grep -o "${name}#[^ ]*" | awk -F'#' '{print $2}')
+		path=$(echo $targets | grep -o "${target}#[^ ]*" | awk -F'#' '{print $2}')
 
 		srcdir="$path/$vsn"
 
@@ -139,10 +133,10 @@ case "$cmd" in
 		fi
 
 		buildid=$(shasum $(find $srcdir -type f -or -type l) | shasum | awk '{print $1}')
-		distdir=$builddir/$name/$vsn/$buildid
+		distdir=$builddir/$target/$vsn/$buildid
 
 		if [ -d "$distdir" ] && [ "-f" != "$1" ]; then
-			echo "ERROR: build exists $name/$vsn#$buildid... use -f to overwrite" >&2
+			echo "ERROR: build exists $target/$vsn#$buildid... use -f to overwrite" >&2
 			exit 2
 		elif [ "-f" == "$1" ]; then
 			shift
@@ -165,13 +159,13 @@ case "$cmd" in
 
 			archive=$(mktemp -u)
 			cd $buildtarget
-			sudo tar -cf $archive .
+			sudo tar -cf "$archive" .
 
-			buildhash=$(shasum $archive | awk '{print $1}')
+			buildhash=$(shasum "$archive" | awk '{print $1}')
 			buildref=$buildhash.tar.gz
-			echo "=> Build $name/$vsn:$buildref in $buildtarget"
+			echo "=> Build $target/$vsn:$buildref in $buildtarget"
 			if [ -d "$distdir/$buildref" ]; then
-				echo "info: build $name/$vsn#$buildid/$buildref exists, delete it first to rebuild" >&2
+				echo "info: build $target/$vsn#$buildid/$buildref exists, delete it first to rebuild" >&2
 				sudo rm "$archive"
 				exit
 			else
@@ -238,14 +232,9 @@ case "$cmd" in
 
 		[ 0 -eq $res ] || exit $res
 
-		if [ -e "$path.tar.gz" ]; then
-			path=$path.tar.gz
-		elif [ ! -d "$path" ]; then
-			echo "error: no builds found for $target ($path)" >&2
-			exit 3
-		fi
+		echo $path
 
-		if [ $(find $path -type f -name '*.tar.gz' | wc -l) -gt 1 ]; then
+		if [ $(find $(dirname "$path") -type f -name '*.tar.gz' | wc -l) -gt 1 ]; then
 			echo "error: multiple builds found... be specific..." >&2
 			echo "=> Builds: " >&2
 			for f in $(find $path -name '*.tar.gz'); do
@@ -255,7 +244,7 @@ case "$cmd" in
 			exit 3
 		fi
 
-		archive=$(find $path -type f -name '*.tar.gz')
+		archive=$path.tar.gz
 		rundir=/tmp/spew-app-$(basename -s .tar.gz $archive)
 
 		matchsum=$(shasum $archive | awk '{print $1}')
