@@ -40,6 +40,55 @@ expand_target() {
 	echo "$path/$(basename -s .tar.gz "$subpath")"
 }
 
+import_build() {
+	archive="$1"
+	signature="$2"
+	force=no
+
+	if [ '-f' == "$signature" ]; then
+		signature=
+		force=yes
+	elif [ '-f' == "$3" ]; then
+		force=yes
+	fi
+
+	[ -z "$archive" ]  && { echo "usage: $0 import-build <archive> <signature>" >&2; exit 2; }
+	[ -z "$signature" ] && signature="$archive.asc"
+
+	[ ! -r "$archive" ] && { echo "error: archive not found or not readable" >&2; exit 2; }
+	[ ! -r "$signature" ] && { echo "error: the archive signature not found or not readable" >&2; exit 2; }
+
+
+	matchsum=$(/usr/bin/core_perl/shasum "$archive" | awk '{print $1}')
+
+	if [ "$matchsum.tar.gz" != "$(basename "$archive")" ]; then
+		echo "ERROR: Checksum mismatch" >&2
+		exit 3
+	fi
+
+	if gpg -q --verify "$archive.asc" "$archive" > /dev/null 2>&1; then
+		echo "=> GPG Signature verified"
+	else
+		echo "ERROR: Failed to verify GPG signature" >&2
+		exit 3
+	fi
+
+	eval export $(tar xvf "$archive" -O ./SPEWMETA 2> /dev/null | sed "s/.*/'&'/")
+	[ -z "$TARGET" ] && { echo "error: no target info in build (SPEWMETA)"; exit 3; }
+	[ -z "$VSN" ] && { echo "error: no version info in build (SPEWMETA)"; exit 3; }
+	[ -z "$SRCREF" ] && { echo "error: no source ref info in build (SPEWMETA)"; exit 3; }
+
+	if [ -e "$builddir/$TARGET/$VSN/$SRCREF/$(basename "$archive")" ] && [ 'yes' != "$force" ]; then
+		echo "error: build already exists, use -f to override" >&2
+		exit 3
+	fi
+
+	echo "=> Importing $(basename "$archive") to $TARGET/$VSN/$SRCREF"
+	mkdir -p "$builddir/$TARGET/$VSN/$SRCREF"
+	cp "$archive" "$builddir/$TARGET/$VSN/$SRCREF/"
+	cp "$signature" "$builddir/$TARGET/$VSN/$SRCREF/$(basename "$archive.asc")"
+}
+
 cmd="$1"
 shift
 case "$cmd" in
@@ -201,61 +250,55 @@ EOF
 		;;
 
 	"import-build")
-		archive="$1"
-		signature="$2"
-		force=no
-
-		if [ '-f' == "$signature" ]; then
-			signature=
-			force=yes
-		elif [ '-f' == "$3" ]; then
-			force=yes
-		fi
-
-		[ -z "$archive" ]  && { echo "usage: $0 import-build <archive> <signature>" >&2; exit 2; }
-		[ -z "$signature" ] && signature="$archive.asc"
-
-		[ ! -r "$archive" ] && { echo "error: archive not found or not readable" >&2; exit 2; }
-		[ ! -r "$signature" ] && { echo "error: the archive signature not found or not readable" >&2; exit 2; }
-
-
-		matchsum=$(shasum "$archive" | awk '{print $1}')
-
-		if [ "$matchsum.tar.gz" != "$(basename "$archive")" ]; then
-			echo "ERROR: Checksum mismatch" >&2
-			exit 3
-		fi
-
-		if gpg -q --verify "$archive.asc" "$archive" > /dev/null 2>&1; then
-			echo "=> GPG Signature verified"
-		else
-			echo "ERROR: Failed to verify GPG signature" >&2
-			exit 3
-		fi
-
-		eval export $(tar xvf "$archive" -O ./SPEWMETA 2> /dev/null | sed "s/.*/'&'/")
-		[ -z "$TARGET" ] && { echo "error: no target info in build (SPEWMETA)"; exit 3; }
-		[ -z "$VSN" ] && { echo "error: no version info in build (SPEWMETA)"; exit 3; }
-		[ -z "$SRCREF" ] && { echo "error: no source ref info in build (SPEWMETA)"; exit 3; }
-
-		if [ -e "$builddir/$TARGET/$VSN/$SRCREF/$(basename "$archive")" ] && [ 'yes' != "$force" ]; then
-			echo "error: build already exists, use -f to override" >&2
-			exit 3
-		fi
-
-		echo "=> Importing $(basename "$archive") to $TARGET/$VSN/$SRCREF"
-		mkdir -p "$builddir/$TARGET/$VSN/$SRCREF"
-		cp "$archive" "$builddir/$TARGET/$VSN/$SRCREF/"
-		cp "$signature" "$builddir/$TARGET/$VSN/$SRCREF/$(basename "$archive.asc")"
-
+		import_build $@
 		;;
 
 	"sync-build")
-		build="$1"
+		arg="$1"
 		shift
 		remotes="$*"
 
-		( [ -z "$build" ] || [ -z "$remotes" ] ) && { echo "usage: $0 sync-build <build> <remote-1, .., remote-n>>" >&2; exit 2; }
+		( [ -z "$arg" ] || [ -z "$remotes" ] ) && { echo "usage: $0 sync-build <build> <remote-1, .., remote-n>>" >&2; exit 2; }
+
+		set +e
+		path=$(expand_target "$arg")
+		res=$?
+
+		target=$(echo "$arg" | awk -F/ '{print $1}')
+		vsn=$(echo "$arg" | awk -F/ '{print $2}')
+		ref=$(echo "$arg" | awk -F/ '{print $3}')
+		build=$(echo "$arg" | awk -F/ '{print $4}')
+		set -e
+
+		if [ 1 -eq $res ]; then
+			echo "error: no such target: $target" >&2
+		elif [ 2 -eq $res ]; then
+			echo "error: no such version for $target" >&2
+			echo "=> Available versions:"
+			ls "$builddir/$target"
+		elif [ 3 -eq $res ]; then
+			echo "error: no such cfgref $ref for $path" >&2
+		elif [ 4 -eq $res ]; then
+			echo "error: no such build for $target/$vsn/$ref" >&2
+		fi
+
+		[ 0 -eq "$res" ] || exit $res
+
+		cd "$(dirname $path)"
+		base=$(basename "$path")
+		echo "=> Packing"
+		for remote in $remotes; do
+			tar cvzf - "$base"* | ssh "$remote" bin/spew-build sync-recv
+		done
+
+		;;
+
+	"sync-recv")
+		tmpdir=$(mktemp -d)
+		echo "=> Receiving"
+		tar xvfz - -C "$tmpdir" < /dev/stdin
+		import_build $(find "$tmpdir" -name '*.tar.gz') -f
+		rm -rf "$tmpdir"
 		;;
 
 	"delete-build")
